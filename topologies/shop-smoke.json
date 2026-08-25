@@ -1,0 +1,139 @@
+{
+  "topology": {
+    "services": [
+      {
+        "serviceName": "ashish-api-gateway",
+        "tier": "edge",
+        "instances": ["ashish-api-gateway-5f8c-aaa", "ashish-api-gateway-5f8c-bbb"],
+        "attributeSets": [
+          { "weight": 80, "attributes": { "version": "v1.2.0", "cloud.region": "us-east-1" } },
+          { "weight": 20, "attributes": { "version": "v1.1.4", "cloud.region": "us-east-1" } }
+        ],
+        "eventSets": [
+          {
+            "weight": 100,
+            "events": [{ "name": "request.received", "attributes": { "client.type": "web" } }]
+          }
+        ],
+        "routes": [
+          {
+            "route": "GET /api/cart",
+            "spanKind": "server",
+            "downstreamCalls": { "ashish-cart-service": "GET /cart" },
+            "latency": { "p50": 40, "p99": 200, "outlierRate": 0.02, "outlierMultiplier": 5 },
+            "attributeSets": [
+              { "weight": 95, "attributes": { "http.response.status_code": 200 } },
+              { "weight": 5, "attributes": { "error": true, "http.response.status_code": 503 } }
+            ],
+            "metrics": {
+              "business": [{ "name": "cart.views", "kind": "counter", "unit": "{view}" }]
+            }
+          },
+          {
+            "route": "POST /api/checkout",
+            "spanKind": "server",
+            "downstreamCalls": { "ashish-cart-service": "POST /checkout" },
+            "latency": { "p50": 180, "p99": 900, "outlierRate": 0.05, "outlierMultiplier": 7 },
+            "attributeSets": [
+              { "weight": 88, "attributes": { "http.response.status_code": 200 } },
+              { "weight": 12, "attributes": { "error": true, "http.response.status_code": 502 } }
+            ],
+            "metrics": {
+              "business": [
+                { "name": "orders.placed", "kind": "counter", "unit": "{order}" },
+                { "name": "order.value", "kind": "histogram", "unit": "USD", "min": 10, "max": 500 }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "serviceName": "ashish-cart-service",
+        "tier": "application",
+        "instances": ["ashish-cart-service-7d9b-ccc", "ashish-cart-service-7d9b-ddd"],
+        "attributeSets": [
+          { "weight": 100, "attributes": { "version": "v2.3.1" } }
+        ],
+        "eventSets": [
+          {
+            "weight": 70,
+            "events": [{ "name": "cart.loaded", "attributes": { "cart.items": 3 } }]
+          },
+          {
+            "weight": 30,
+            "events": [
+              { "name": "cart.loaded", "attributes": { "cart.items": 1 } },
+              { "name": "cart.validated" }
+            ]
+          }
+        ],
+        "routes": [
+          {
+            "route": "GET /cart",
+            "spanKind": "server",
+            "downstreamCalls": { "ashish-redis-cache": "HGETALL" },
+            "latency": { "p50": 15, "p99": 80, "outlierRate": 0.01, "outlierMultiplier": 4 },
+            "metrics": {
+              "business": [
+                { "name": "cart.value", "kind": "histogram", "unit": "USD", "min": 5, "max": 400 }
+              ]
+            }
+          },
+          {
+            "route": "POST /checkout",
+            "spanKind": "server",
+            "downstreamCalls": {
+              "ashish-redis-cache": "HGETALL",
+              "ashish-cart-service": "POST /reserve-stock"
+            },
+            "latency": { "p50": 120, "p99": 700, "outlierRate": 0.04, "outlierMultiplier": 6 },
+            "attributeSets": [
+              { "weight": 90, "attributes": { "http.response.status_code": 200 } },
+              { "weight": 10, "attributes": { "error": true, "http.response.status_code": 409 } }
+            ]
+          },
+          {
+            "route": "POST /reserve-stock",
+            "spanKind": "internal",
+            "downstreamCalls": { "ashish-redis-cache": "SETNX" },
+            "latency": { "p50": 25, "p99": 150, "outlierRate": 0.02, "outlierMultiplier": 5 }
+          }
+        ]
+      },
+      {
+        "serviceName": "ashish-redis-cache",
+        "tier": "data",
+        "instances": ["ashish-redis-cache-0", "ashish-redis-cache-1"],
+        "attributeSets": [
+          { "weight": 100, "attributes": { "db.system": "redis", "db.version": "7.2" } }
+        ],
+        "routes": [
+          {
+            "route": "HGETALL",
+            "spanKind": "client",
+            "latency": { "p50": 2, "p99": 12, "outlierRate": 0.01, "outlierMultiplier": 6 }
+          },
+          {
+            "route": "SETNX",
+            "spanKind": "client",
+            "latency": { "p50": 3, "p99": 15, "outlierRate": 0.01, "outlierMultiplier": 6 }
+          }
+        ]
+      }
+    ]
+  },
+
+  "rootRoutes": [
+    { "service": "ashish-api-gateway", "route": "GET /api/cart", "tracesPerHour": 3600 },
+    { "service": "ashish-api-gateway", "route": "POST /api/checkout", "tracesPerHour": 1200 }
+  ],
+
+  "surges": [
+    {
+      "everyMinutes": 5,
+      "durationSeconds": 60,
+      "multiplier": 4,
+      "routes": ["POST /api/checkout"]
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+# Local pipeline for running the generator without a New Relic account.
+#
+#   docker compose up -d
+#   go run ./cmd/otel-ecom-load-genrator \
+#     --topology topologies/shop-smoke.json --backend local --duration 30s
+#
+# Then open Jaeger at http://localhost:16686 and pick a service.
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    ports:
+      - "16686:16686" # Jaeger UI
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317" # OTLP gRPC, where the generator sends
+      - "4318:4318" # OTLP HTTP
+      - "8889:8889" # Prometheus scrape endpoint for exported metrics
+    depends_on:
+      - jaeger
