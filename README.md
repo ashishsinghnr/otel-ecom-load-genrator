@@ -81,6 +81,7 @@ A 3-second run produces roughly 29 spans across 7 traces, with logs and
 ```
 --topology string      Path to the topology JSON file (required)
 --backend string       newrelic | otlp | local (default "newrelic")
+--endpoint string      OTLP endpoint URL or host:port (overrides everything below)
 --protocol string      grpc (port 4317) | http (port 4318) (default "grpc")
 --nr-region string     us | eu (default "us")
 --namespace string     service.namespace (default "ecom")
@@ -124,6 +125,26 @@ Endpoints:
 The protocol picks the port, so `--protocol http` reaches 4318 without you
 specifying a URL. gRPC traffic sent to 4318 fails, which is the usual cause of
 "it works with curl but not with the SDK".
+
+**Setting the endpoint.** The table above lists defaults, not constraints.
+Three ways to override, highest precedence first:
+
+```sh
+# 1. --endpoint flag: wins over everything
+--endpoint https://my-collector.internal:4318
+--endpoint my-collector.internal:4318          # bare host:port also works
+
+# 2. the standard OTLP environment variable
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://my-collector.internal:4318
+
+# 3. otherwise, the --backend default for the chosen protocol
+```
+
+The startup log states which source won, so a run is never ambiguous:
+
+```
+msg="starting load generator" endpoint="http://127.0.0.1:4318 (--endpoint)" protocol=http
+```
 
 The US host is New Relic **staging**, on purpose: this is synthetic test data,
 and pointing it at a production account would pollute real dashboards and

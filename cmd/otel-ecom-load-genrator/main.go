@@ -29,6 +29,7 @@ const shutdownTimeout = 10 * time.Second
 type flags struct {
 	topology     string
 	backend      string
+	endpoint     string
 	protocol     string
 	nrRegion     string
 	namespace    string
@@ -110,6 +111,7 @@ func run() error {
 
 	providers, err := telemetry.Setup(ctx, topoFile.Topology, telemetry.Options{
 		Backend:     backend,
+		Endpoint:    f.endpoint,
 		Protocol:    protocol,
 		NRRegion:    f.nrRegion,
 		Namespace:   f.namespace,
@@ -130,6 +132,9 @@ func run() error {
 	}
 	logger.Info("starting load generator",
 		"backend", backend,
+		"endpoint", telemetry.DescribeEndpoint(telemetry.Options{
+			Backend: backend, Endpoint: f.endpoint, Protocol: protocol, NRRegion: f.nrRegion,
+		}),
 		"protocol", protocol,
 		"services", len(topoFile.Topology.Services),
 		"rootRoutes", len(topoFile.RootRoutes),
@@ -183,6 +188,7 @@ func parseFlags() flags {
 	var f flags
 	flag.StringVar(&f.topology, "topology", "", "Path to the topology JSON file (required)")
 	flag.StringVar(&f.backend, "backend", "newrelic", "Exporter defaults: newrelic, otlp or local")
+	flag.StringVar(&f.endpoint, "endpoint", "", "OTLP endpoint URL or host:port (overrides --backend default and OTEL_EXPORTER_OTLP_ENDPOINT)")
 	flag.StringVar(&f.protocol, "protocol", "grpc", "OTLP protocol: grpc (port 4317) or http (port 4318)")
 	flag.StringVar(&f.nrRegion, "nr-region", "us", "New Relic region: us or eu")
 	flag.StringVar(&f.namespace, "namespace", "ecom", "service.namespace resource attribute")

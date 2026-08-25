@@ -223,3 +223,96 @@ func TestResolveEndpoint_ProtocolSelectsPort(t *testing.T) {
 		})
 	}
 }
+
+// The --endpoint flag must take precedence over both the backend default and
+// the environment variable, so a run can be pointed anywhere without code
+// changes or unsetting the environment.
+func TestResolveEndpoint_FlagPrecedence(t *testing.T) {
+	t.Run("flag beats backend default", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		got, err := Options{
+			Backend:  BackendNewRelic,
+			Endpoint: "https://my-collector:4318",
+		}.resolveEndpoint()
+		if err != nil {
+			t.Fatalf("errored: %v", err)
+		}
+		if got != "https://my-collector:4318" {
+			t.Errorf("resolveEndpoint = %q, want the flag value", got)
+		}
+	})
+
+	t.Run("flag beats env var", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://from-env:4318")
+		got, err := Options{
+			Backend:  BackendNewRelic,
+			Endpoint: "https://from-flag:4318",
+		}.resolveEndpoint()
+		if err != nil {
+			t.Fatalf("errored: %v", err)
+		}
+		if got != "https://from-flag:4318" {
+			t.Errorf("resolveEndpoint = %q, want the flag to win over the env var", got)
+		}
+	})
+
+	t.Run("env var used when no flag", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://from-env:4318")
+		got, err := Options{Backend: BackendNewRelic}.resolveEndpoint()
+		if err != nil {
+			t.Fatalf("errored: %v", err)
+		}
+		// Empty means "let the SDK read the env var itself".
+		if got != "" {
+			t.Errorf("resolveEndpoint = %q, want empty so the SDK reads the env var", got)
+		}
+	})
+}
+
+// DescribeEndpoint must name which source won, so a run's log is unambiguous.
+func TestDescribeEndpoint(t *testing.T) {
+	t.Run("flag", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		got := DescribeEndpoint(Options{Backend: BackendNewRelic, Endpoint: "https://x:4318"})
+		if !strings.Contains(got, "https://x:4318") || !strings.Contains(got, "--endpoint") {
+			t.Errorf("DescribeEndpoint = %q, want it to name the flag and value", got)
+		}
+	})
+
+	t.Run("env", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env-host:4318")
+		got := DescribeEndpoint(Options{Backend: BackendNewRelic})
+		if !strings.Contains(got, "env-host") || !strings.Contains(got, "OTEL_EXPORTER_OTLP_ENDPOINT") {
+			t.Errorf("DescribeEndpoint = %q, want it to name the env var", got)
+		}
+	})
+
+	t.Run("backend default", func(t *testing.T) {
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		got := DescribeEndpoint(Options{Backend: BackendNewRelic, Protocol: ProtocolHTTP})
+		if !strings.Contains(got, "staging-otlp.nr-data.net:4318") {
+			t.Errorf("DescribeEndpoint = %q, want the resolved staging URL with the HTTP port", got)
+		}
+		if !strings.Contains(got, "--backend") {
+			t.Errorf("DescribeEndpoint = %q, want it to name the backend as the source", got)
+		}
+	})
+}
+
+// gRPC must honor the flag too, including stripping a path.
+func TestGRPCTarget_HonorsFlagAndStripsPath(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	opts := Options{Backend: BackendNewRelic, Endpoint: "https://host.example:4317/v1/traces"}
+	ep, err := opts.resolveEndpoint()
+	if err != nil {
+		t.Fatalf("errored: %v", err)
+	}
+	target, useTLS := grpcTarget(ep, opts)
+	if target != "host.example:4317" {
+		t.Errorf("target = %q, want host.example:4317 with scheme and path stripped", target)
+	}
+	if !useTLS {
+		t.Error("https endpoint should use TLS")
+	}
+}

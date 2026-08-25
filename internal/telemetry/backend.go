@@ -70,12 +70,18 @@ const (
 	localHost      = "localhost"
 )
 
+// URL schemes. The scheme selects the transport: http means plaintext.
+const (
+	schemeHTTP  = "http://"
+	schemeHTTPS = "https://"
+)
+
 // Endpoint constants retained for tests and documentation. These are the
 // gRPC-port forms; resolveEndpoint builds the protocol-correct URL.
 const (
-	newRelicUSEndpoint = "https://" + newRelicUSHost + ":4317"
-	newRelicEUEndpoint = "https://" + newRelicEUHost + ":4317"
-	localEndpoint      = "http://" + localHost + ":4317"
+	newRelicUSEndpoint = schemeHTTPS + newRelicUSHost + ":4317"
+	newRelicEUEndpoint = schemeHTTPS + newRelicEUHost + ":4317"
+	localEndpoint      = schemeHTTP + localHost + ":4317"
 )
 
 // licenseKeyEnv holds the New Relic ingest key. It is read from the
@@ -91,10 +97,25 @@ type Options struct {
 	Namespace   string
 	Environment string
 
-	// endpointOverride forces a specific endpoint, bypassing backend defaults
-	// and the environment. Unexported so it is only settable from this package,
-	// which is what tests need to point at a local server.
+	// Endpoint forces a specific OTLP endpoint, taking precedence over the
+	// backend default and over OTEL_EXPORTER_OTLP_ENDPOINT.
+	//
+	// Accepts a full URL ("https://host:4318") or a bare "host:port". With no
+	// scheme, TLS is used unless the backend is local. A path is ignored: the
+	// SDK appends the per-signal path itself.
+	Endpoint string
+
+	// endpointOverride is the test-only equivalent of Endpoint, kept separate
+	// so tests can target a local server without going through flag parsing.
 	endpointOverride string
+}
+
+// effectiveEndpoint returns the caller-supplied endpoint, if any.
+func (o Options) effectiveEndpoint() string {
+	if o.Endpoint != "" {
+		return o.Endpoint
+	}
+	return o.endpointOverride
 }
 
 // protocol returns the configured protocol, defaulting to gRPC.
@@ -119,14 +140,20 @@ func ParseBackend(s string) (Backend, error) {
 	}
 }
 
-// resolveEndpoint returns the endpoint for the backend, or "" to mean
-// "let the SDK read OTEL_EXPORTER_OTLP_ENDPOINT".
+// resolveEndpoint returns the endpoint to export to, or "" to mean "let the
+// SDK read OTEL_EXPORTER_OTLP_ENDPOINT".
 //
-// An explicit OTEL_EXPORTER_OTLP_ENDPOINT always wins, so the tool stays
-// usable with any OTLP consumer regardless of --backend.
+// Precedence, highest first:
+//
+//  1. Options.Endpoint (the --endpoint flag)
+//  2. OTEL_EXPORTER_OTLP_ENDPOINT
+//  3. the --backend default for the configured protocol
+//
+// The backend defaults are conveniences, not constraints: any OTLP consumer
+// can be targeted without touching the code.
 func (o Options) resolveEndpoint() (string, error) {
-	if o.endpointOverride != "" {
-		return o.endpointOverride, nil
+	if ep := o.effectiveEndpoint(); ep != "" {
+		return ep, nil
 	}
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != "" {
 		return "", nil
@@ -138,17 +165,39 @@ func (o Options) resolveEndpoint() (string, error) {
 	case BackendNewRelic:
 		switch strings.ToLower(o.NRRegion) {
 		case "", "us":
-			return "https://" + newRelicUSHost + ":" + port, nil
+			return schemeHTTPS + newRelicUSHost + ":" + port, nil
 		case "eu":
-			return "https://" + newRelicEUHost + ":" + port, nil
+			return schemeHTTPS + newRelicEUHost + ":" + port, nil
 		default:
 			return "", fmt.Errorf("unknown New Relic region %q (want us or eu)", o.NRRegion)
 		}
 	case BackendLocal:
-		return "http://" + localHost + ":" + port, nil
+		return schemeHTTP + localHost + ":" + port, nil
 	default:
 		return "", nil
 	}
+}
+
+// DescribeEndpoint returns a human-readable description of where telemetry
+// will be sent, for the startup log.
+//
+// With three possible sources for the endpoint, a run should state which one
+// actually took effect rather than leaving it to be inferred.
+func DescribeEndpoint(o Options) string {
+	if ep := o.effectiveEndpoint(); ep != "" {
+		return ep + " (--endpoint)"
+	}
+	if env := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); env != "" {
+		return env + " (OTEL_EXPORTER_OTLP_ENDPOINT)"
+	}
+	ep, err := o.resolveEndpoint()
+	if err != nil {
+		return "unresolved: " + err.Error()
+	}
+	if ep == "" {
+		return "SDK default (localhost)"
+	}
+	return ep + " (--backend " + string(o.Backend) + ")"
 }
 
 // grpcTarget converts an endpoint into a gRPC dial target and reports whether
@@ -159,23 +208,33 @@ func (o Options) resolveEndpoint() (string, error) {
 // a bare host:port follows the OTLP default of TLS unless the backend is the
 // local collector.
 func grpcTarget(endpoint string, opts Options) (target string, useTLS bool) {
-	// Fall back to the standard env var, then to the backend default.
+	// Fall back to the standard env var, then to the backend default. The
+	// port comes from the protocol so this stays correct for both.
 	if endpoint == "" {
 		endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	}
 	if endpoint == "" {
+		port := defaultPortFor(opts.protocol())
 		if opts.Backend == BackendLocal {
-			endpoint = localEndpoint
+			endpoint = schemeHTTP + localHost + ":" + port
 		} else {
-			endpoint = newRelicUSEndpoint
+			endpoint = schemeHTTPS + newRelicUSHost + ":" + port
 		}
 	}
 
+	// Strip any path: gRPC dials host:port.
+	trimScheme := func(s string) string {
+		if i := strings.IndexByte(s, '/'); i >= 0 {
+			return s[:i]
+		}
+		return s
+	}
+
 	switch {
-	case strings.HasPrefix(endpoint, "http://"):
-		return strings.TrimPrefix(endpoint, "http://"), false
-	case strings.HasPrefix(endpoint, "https://"):
-		return strings.TrimPrefix(endpoint, "https://"), true
+	case strings.HasPrefix(endpoint, schemeHTTP):
+		return trimScheme(strings.TrimPrefix(endpoint, schemeHTTP)), false
+	case strings.HasPrefix(endpoint, schemeHTTPS):
+		return trimScheme(strings.TrimPrefix(endpoint, schemeHTTPS)), true
 	default:
 		// No scheme: OTLP defaults to secure, except for the local collector.
 		return endpoint, opts.Backend != BackendLocal
